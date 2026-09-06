@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""Run the full CLW v1.2 / POSEIDON-QIT experiment and emit every published artefact.
+
+Outputs
+-------
+results/paper_results.json      complete result manifest (single source of truth)
+results/primary_results.csv     frozen operating point, all policies
+results/matched_workload.csv    matched nominal-intervention comparison
+results/mechanism_roc.csv       rejection rate vs nominal intervention, families 6 and 7
+results/gate_ablation.csv       single-coordinate ablation of B6
+results/paired_comparisons.csv  prespecified seed-level paired tests
+technical_report/generated/results_section.tex
+"""
+import csv
+import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+from clw_benchmark import publication as PB          # noqa: E402
+from clw_benchmark import policies as P              # noqa: E402
+from clw_benchmark import assurance as A             # noqa: E402
+
+COORD_NAME = {"gf": "Fused purity", "C": "Centred alignment", "J": "Bipartite score",
+              "S": "Entropy", "gm": "Marginal purity", "Dv": "Relative entropy",
+              "F": "Fidelity"}
+
+
+def w(path, header, rows):
+    full = os.path.join(ROOT, path)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", newline="") as fh:
+        cw = csv.writer(fh)
+        cw.writerow(header)
+        cw.writerows(rows)
+
+
+def f(x, n=4):
+    return f"{x:.{n}f}"
+
+
+def main():
+    print("running 20 predeclared seeds ...")
+    per_seed = PB.run_all()
+    agg = PB.aggregate(per_seed)
+    os.makedirs(os.path.join(ROOT, "results"), exist_ok=True)
+    PB.save(agg, os.path.join(ROOT, "results", "paper_results.json"))
+
+    w("results/primary_results.csv",
+      ["policy", "label", "HAR", "Cov", "SelRisk", "NomInt", "HAR_f6", "HAR_f7"],
+      [[p, P.POLICY_LABEL[p]] + [f(agg["primary"][p][k]) for k in
+        ("HAR", "Cov", "SelRisk", "NomInt", "HAR_f6", "HAR_f7")]
+       for p in P.POLICY_ORDER])
+
+    w("results/matched_workload.csv",
+      ["policy", "param", "HAR", "Cov", "SelRisk", "NomInt",
+       "HAR_f6", "reject_f6", "HAR_f7", "reject_f7"],
+      [[p, f(agg["matched"][p]["param"], 3)]
+       + [f(agg["matched"][p][k]) for k in ("HAR", "Cov", "SelRisk", "NomInt", "HAR_f6")]
+       + [f(1 - agg["matched"][p]["Cov_f6"])]
+       + [f(agg["matched"][p]["HAR_f7"]), f(1 - agg["matched"][p]["Cov_f7"])]
+       for p in ("B2", "B7", "B6", "B6c", "B8", "B8c")])
+
+    rows = []
+    for pol, pts in agg["frontier"].items():
+        for pt in pts:
+            rows.append([pol, f(pt["q"], 3), f(pt["NomInt"]), f(pt["Cov"]), f(pt["HAR"]),
+                         f(1 - pt["Cov_f6"]), f(1 - pt["Cov_f7"])])
+    w("results/mechanism_roc.csv",
+      ["policy", "param", "NomInt", "Cov", "HAR", "reject_f6", "reject_f7"], rows)
+
+    w("results/gate_ablation.csv", ["coordinate", "name", "HAR", "increase"],
+      [[k, COORD_NAME[k], f(v["HAR"], 6), f(v["increase"], 6)]
+       for k, v in sorted(agg["ablation"].items(),
+                          key=lambda kv: -kv[1]["increase"])])
+
+    w("results/paired_comparisons.csv",
+      ["comparison", "n", "n_positive", "mean_difference", "p_exact", "p_holm"],
+      [[k, v["n"], v["n_positive"], f(v["mean_difference"]),
+        f"{v['pvalue']:.3e}", f"{v['pvalue_holm']:.3e}"]
+       for k, v in agg["tests"].items()])
+
+    print("running supervised representation-probe and gate-aware attack experiments ...")
+    adv = PB.aggregate_adversarial(PB.run_adversarial())
+    with open(os.path.join(ROOT, "results", "adversarial_results.json"), "w") as fh:
+        json.dump(adv, fh, indent=2)
+
+    rows = []
+    for fam in ("f6", "f7"):
+        for rep in ("obs", "struct"):
+            e = adv["probe"]["by_family"][fam][rep]
+            for ni, rj in zip(e["ni_grid"], e["rejection"]):
+                rows.append([fam, rep, f(ni, 2), f(rj), f(e["tv_lower_bound"], 3)])
+    w("results/representation_probe.csv",
+      ["family", "representation", "nominal_intervention", "rejection", "tv_lower_bound"],
+      rows)
+
+    w("results/adaptive_mechanism.csv",
+      ["rho", "innovation", "sigma", "error_rate", "mean_confidence",
+       "harm_B7", "harm_B6c", "harm_B6", "harm_B8c", "harm_B8"],
+      [[f(r["rho"], 2), f(r["innovation"], 2), f(r["sigma"], 2),
+        f(r["error_rate"]), f(r["mean_confidence"])]
+       + [f(r[f"harm_{k}"]) for k in ("B7", "B6c", "B6", "B8c", "B8")]
+       for r in adv["mechanism"]])
+
+    w("results/adaptive_evasion.csv",
+      ["coordinate_set", "eps", "evaded_clean", "evaded_attacked",
+       "median_margin_clean", "median_margin_attacked"],
+      [[k] + [f(v["eps"], 2), f(v["evaded_clean"]), f(v["evaded_attacked"]),
+              f(v["median_margin_clean"], 2), f(v["median_margin_attacked"], 2)]
+       for k, vs in adv["evasion"].items() for v in vs])
+
+    write_results_section(agg, adv)
+    print("wrote results/*.csv, results/paper_results.json and "
+          "technical_report/generated/results_section.tex")
+
+
+def write_results_section(a, adv=None):
+    m, pr, ab, t = a["matched"], a["primary"], a["ablation"], a["tests"]
+    L = []
+    add = L.append
+    add("% Auto-generated by scripts/build_publication.py from results/paper_results.json.")
+    add("% Do not edit by hand: rerun the script instead.")
+    add(r"\subsection{Frozen operating point}")
+    add(r"\begin{table}[H]")
+    add(r"\caption{All eleven policy configurations at the frozen gate quantile $0.98$ (threshold $0.60$ "
+        r"for B1 and B2), 20 predeclared seeds, seed means.}")
+    add(r"\label{tab:primary_results}")
+    add(r"\centering\small")
+    add(r"\begin{tabular}{@{}lcccc@{}}")
+    add(r"\toprule")
+    add(r"Policy & HAR$\downarrow$ & Coverage & Selective risk$\downarrow$ & "
+        r"Nominal intervention$\downarrow$\\")
+    add(r"\midrule")
+    for p in P.POLICY_ORDER:
+        e = pr[p]
+        add(f"{P.POLICY_LABEL[p]} & {f(e['HAR'],3)} & {f(e['Cov'],3)} & "
+            f"{f(e['SelRisk'],3)} & {f(e['NomInt'],3)}\\\\")
+    add(r"\bottomrule")
+    add(r"\end{tabular}")
+    add(r"\end{table}")
+    add("")
+    add(r"\subsection{Matched nominal-workload comparison}")
+    add("The gate quantile of each cascade, and the confidence threshold of B2, are "
+        "selected per seed so that nominal intervention measured on the nominal "
+        f"\\emph{{calibration}} records equals the predeclared target "
+        f"${a['matched_target_nominal_intervention']:.2f}$. No evaluation record is "
+        "consulted. Table~\\ref{tab:matched} reports the resulting evaluation values.")
+    add(r"\begin{table}[H]")
+    add(r"\caption{Matched nominal-workload comparison. Rejection rate is the fraction "
+        r"of that mechanism's evaluation records denied immediate authority.}")
+    add(r"\label{tab:matched}")
+    add(r"\centering\small")
+    add(r"\begin{tabular}{@{}lcccccc@{}}")
+    add(r"\toprule")
+    add(r"Policy & HAR$\downarrow$ & Cov. & Sel.\ risk$\downarrow$ & Nom.\ int. & "
+        r"rej.\ spoof$\uparrow$ & rej.\ resid.$\uparrow$\\")
+    add(r"\midrule")
+    for p in ("B2", "B7", "B6", "B6c", "B8", "B8c"):
+        e = m[p]
+        add(f"{P.POLICY_LABEL[p]} & {f(e['HAR'],3)} & {f(e['Cov'],3)} & "
+            f"{f(e['SelRisk'],3)} & {f(e['NomInt'],3)} & {f(1-e['Cov_f6'],3)} & "
+            f"{f(1-e['Cov_f7'],3)}\\\\")
+    add(r"\bottomrule")
+    add(r"\end{tabular}")
+    add(r"\end{table}")
+    add("")
+    add(r"\subsection{Prespecified paired comparisons}")
+    for k, v in t.items():
+        add(f"Comparison \\texttt{{{k.replace('_',chr(92)+'_')}}}: mean paired reduction "
+            f"{f(v['mean_difference'])} over $n={v['n']}$ seeds, "
+            f"{v['n_positive']}/{v['n']} positive, exact one-sided "
+            f"$p={v['pvalue']:.2e}$, Holm-adjusted $p={v['pvalue_holm']:.2e}$.")
+        add("")
+    add(r"\subsection{Single-coordinate ablation of B6}")
+    add("Ablation semantics are normative: the coordinate is removed from the row-2 "
+        "union, from the row-1 re-sense trigger, and from the row-3 core set. A "
+        "row-2-only removal gives materially different values for the entropy "
+        "coordinate and is not what is reported here.")
+    add(r"\begin{table}[H]")
+    add(rf"\caption{{Single-coordinate ablation at the frozen operating point. "
+        rf"Full B6 harmful acceptance is {a['ablation_full_HAR']:.6f}.}}")
+    add(r"\label{tab:ablation}")
+    add(r"\centering\small")
+    add(r"\begin{tabular}{@{}lcc@{}}")
+    add(r"\toprule")
+    add(r"Coordinate removed & HAR & Increase over full B6\\")
+    add(r"\midrule")
+    for k, v in sorted(ab.items(), key=lambda kv: -kv[1]["increase"]):
+        add(f"{COORD_NAME[k]} & {v['HAR']:.6f} & $+{v['increase']:.6f}$\\\\")
+    add(r"\bottomrule")
+    add(r"\end{tabular}")
+    add(r"\end{table}")
+    add("")
+    add(r"\subsection{Leave-one-seed-out coordinate selection}")
+    LS = a["loso_selection"]
+    add(f"Threshold $\\lambda={LS['threshold']}$ on the mean calibration-split ablation "
+        f"increase over the held-out seeds. Unanimous across folds: "
+        f"\\textbf{{{str(LS['unanimous']).lower()}}}. Selected set: "
+        f"$\\{{{', '.join(LS['selected_set'])}\\}}$. Mean calibration increments: "
+        + ", ".join(f"{COORD_NAME[k]} {v:.5f}"
+                    for k, v in sorted(LS["mean_calibration_increase"].items(),
+                                       key=lambda kv: -kv[1])) + ".")
+    add("")
+    add(r"\subsection{Observation-envelope diagnostic}")
+    o = a["observation"]
+    oc = a["observation_by_coordinate"]
+    add(r"\begin{table}[H]")
+    add(r"\caption{Per-coordinate observation-envelope rates, seed means.}")
+    add(r"\label{tab:envelope_generated}")
+    add(r"\centering\small")
+    add(r"\begin{tabular}{@{}lccccc@{}}")
+    add(r"\toprule")
+    add(r"Family & $p_{\mathrm{cal}}$ & $\bar\delta$ & $V$ & $m$ & $r$\\")
+    add(r"\midrule")
+    for c, nm in ((0, "Nominal"), (6, "Coordinated spoof"), (7, "Correlated residual")):
+        add(nm + " & " + " & ".join(f(oc[f'f{c}:{k}'], 3)
+            for k in ("Pc", "De", "V", "mission", "resensing")) + r"\\")
+    add(r"\bottomrule")
+    add(r"\end{tabular}")
+    add(r"\end{table}")
+    add("Fraction of evaluation records whose compressed observation "
+        r"$(p_{\mathrm{cal}},\bar\delta,m,r,V)$ lies inside the nominal central "
+        "$96\\%$ interval on every coordinate: "
+        f"nominal {o['f0']:.3f}, cross-sensor contradiction {o['f5']:.3f}, "
+        f"coordinated spoof {o['f6']:.3f}, correlated residual {o['f7']:.3f}. "
+        "Under v1.1 this diagnostic was meaningless because mission severity "
+        "separated the common-mode families from nominal with zero overlap.")
+    if adv is not None:
+        add(r"\subsection{Supervised representation probe}")
+        add("A gradient-boosted discriminator is fitted on the training split with "
+            "true mechanism labels, once on the compressed observation and once on "
+            "the structural coordinates with identical model class, and its threshold is swept. "
+            "The fitted curves are empirical lower estimates of achievable supervised "
+            "performance, not certified upper bounds on all routers. The classifier "
+            "balanced accuracy separately gives $\\mathrm{TV}\\ge2\\,\\mathrm{BA}-1$.")
+        add(r"\begin{table}[H]")
+        add(r"\caption{Supervised representation-probe rejection, seed means. "
+            r"$\mathrm{TV}\ge 2\,\mathrm{BA}-1$ is a classifier-derived lower bound.}")
+        add(r"\label{tab:representation_probe}")
+        add(r"\centering\small")
+        add(r"\begin{tabular}{@{}llcccccc c@{}}")
+        add(r"\toprule")
+        add(r"Mechanism & Repr. & " + " & ".join(f"{x:.2f}" for x in adv["probe"]["by_family"]["f7"]["obs"]["ni_grid"]) + r" & $\mathrm{TV}\ge$\\")
+        add(r"\midrule")
+        for fam, nm in (("f7", "Corr.\ residual"), ("f6", "Coord.\ spoof")):
+            for rep, rn in (("obs", "$o$"), ("struct", "structural")):
+                e = adv["probe"]["by_family"][fam][rep]
+                add(f"{nm} & {rn} & " + " & ".join(f(x, 3) for x in e["rejection"])
+                    + f" & {f(e['tv_lower_bound'], 3)}" + r"\\")
+        add(r"\bottomrule")
+        add(r"\end{tabular}")
+        add(r"\end{table}")
+        add("")
+        add(r"\subsection{Gate-aware adversary}")
+        base = [r for r in adv["mechanism"] if abs(r["rho"] - 0.90) < 1e-9
+                and abs(r["innovation"] - 0.10) < 1e-9 and abs(r["sigma"] - 0.05) < 1e-9][0]
+        top = adv["mechanism"][0]
+        add(f"\\textbf{{A1, mechanism redesign.}} Sweeping the coupling $\\rho$, the "
+            f"innovation scale and the evidence noise, the adversary's optimum is "
+            f"$\\rho={top['rho']:.2f}$, innovation ${top['innovation']:.2f}$, noise "
+            f"${top['sigma']:.2f}$, which raises harmful acceptance against B6c from "
+            f"{base['harm_B6c']:.3f} at the CLW setting to {top['harm_B6c']:.3f}. The "
+            f"same setting gives {top['harm_B7']:.3f} against B7 and "
+            f"{top['harm_B8c']:.3f} against B8c, so the ordering of the three "
+            f"representations is preserved under adaptation even though the absolute "
+            f"protection degrades. At that optimum the evidence is a clean, coherent, "
+            f"low-amplitude benign assertion by all three modalities. Under the studied "
+            f"coordinates these records approach nominal-like benign observations; "
+            f"provenance or cross-time consistency would provide additional information.")
+        add("")
+        add(r"\begin{table}[H]")
+        add(r"\caption{A2, budgeted white-box evasion. Fraction of harmful "
+            r"correlated-residual records accepted by the complete cascade, before and "
+            r"after a search constrained to $\|\Delta\|_F\le\varepsilon\|x\|_F$ "
+            r"with the prediction held wrong.}")
+        add(r"\label{tab:evasion}")
+        add(r"\centering\small")
+        add(r"\begin{tabular}{@{}lcccc@{}}")
+        add(r"\toprule")
+        add(r"Coordinate set & clean & $\varepsilon=0.05$ & $\varepsilon=0.10$ & $\varepsilon=0.20$\\")
+        add(r"\midrule")
+        for k in ("B7", "B6c", "B8c"):
+            vs = adv["evasion"][k]
+            add(f"{P.POLICY_LABEL[k]} & {f(vs[0]['evaded_clean'], 3)} & "
+                + " & ".join(f(v["evaded_attacked"], 3) for v in vs) + r"\\")
+        add(r"\bottomrule")
+        add(r"\end{tabular}")
+        add(r"\end{table}")
+
+    path = os.path.join(ROOT, "technical_report", "generated", "results_section.tex")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write("\n".join(L) + "\n")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
