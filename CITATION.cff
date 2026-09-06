@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "POSEIDON-QIT and the Cable-Landing Watch (CLW) Benchmark"
+message: "If you use this software or benchmark, please cite the accompanying POSEIDON-QIT paper and this repository."
+type: software
+authors:
+  - family-names: Korgialas
+    given-names: Christos
+    affiliation: "NOEMAC Private Company"
+  - family-names: Stergiopoulos
+    given-names: Stergios
+    affiliation: "NOEMAC Private Company"
+  - family-names: Plataniotis
+    given-names: "Konstantinos N."
+    affiliation: "NOEMAC Private Company"
+repository-code: "https://github.com/ckorgial/Cable-Landing-Watch"
+version: "1.2"
+abstract: >-
+  Reproducibility package for POSEIDON-QIT, a post-prediction density-state
+  assurance layer for multi-sensor authority routing, and for the Cable-Landing
+  Watch (CLW) synthetic decision-level benchmark.
+keywords:
+  - decision assurance
+  - multi-sensor fusion
+  - density matrices
+  - selective prediction
+  - synthetic benchmark
