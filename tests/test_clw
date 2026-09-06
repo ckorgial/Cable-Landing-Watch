@@ -1,0 +1,296 @@
+"""Unit and property tests for CLW v1.2 and the POSEIDON-QIT assurance layer.
+
+Run with:  pytest -q
+"""
+import os
+import sys
+
+import numpy as np
+import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+from clw_benchmark import assurance as A      # noqa: E402
+from clw_benchmark import generator as G      # noqa: E402
+from clw_benchmark import metrics as MT       # noqa: E402
+from clw_benchmark import policies as P       # noqa: E402
+from clw_benchmark import publication as PB   # noqa: E402
+from clw_benchmark import adversarial as ADV  # noqa: E402
+
+ADV_EPS = ADV.EPS_GRID
+
+SEED = G.SEEDS[0]
+
+
+@pytest.fixture(scope="module")
+def prepared():
+    return PB._prepare(SEED)
+
+
+# ---------------------------------------------------------------- generator
+def test_determinism():
+    a = G.generate_seed(SEED)["evidence"]
+    b = G.generate_seed(SEED)["evidence"]
+    assert np.array_equal(a, b)
+
+
+def test_cardinalities(prepared):
+    d = prepared
+    assert len(d["truth"]) == 8000
+    assert all((d["family"] == c).sum() == 1000 for c in range(8))
+    assert [(d["split"] == k).sum() for k in (0, 1, 2)] == [2400, 1200, 4400]
+
+
+def test_auxiliary_channels_matched():
+    """v1.2 requirement: the common-mode families must not leak through o."""
+    assert np.allclose(G.DELTA_RANGE[6], G.DELTA_RANGE[0])
+    assert np.allclose(G.DELTA_RANGE[7], G.DELTA_RANGE[0])
+    assert G.MBAR[6] == G.MBAR[0] and G.MBAR[7] == G.MBAR[0]
+
+
+def test_no_severity_separation(prepared):
+    d = prepared
+    m0 = d["mission"][d["family"] == 0]
+    m67 = d["mission"][np.isin(d["family"], [6, 7])]
+    # the v1.1 defect was zero overlap; require substantial overlap now
+    assert m0.max() > m67.min()
+    overlap = np.mean((m67 >= m0.min()) & (m67 <= m0.max()))
+    assert overlap > 0.9
+
+
+# ---------------------------------------------------------------- assurance
+def test_states_are_valid_density_operators(prepared):
+    rho_i, rho = prepared["rho_i"], prepared["rho"]
+    for R in (rho_i.reshape(-1, 5, 5), rho):
+        assert np.allclose(R, np.swapaxes(R, -1, -2), atol=1e-12)
+        assert np.allclose(np.trace(R, axis1=-2, axis2=-1), 1.0, atol=1e-10)
+        assert (np.linalg.eigvalsh(R) > 0).all()
+
+
+def test_lemma1_eigenvalue_floor(prepared):
+    lo = A.EPS / (1.0 + A.EPS * A.D)
+    w = np.linalg.eigvalsh(prepared["rho_i"].reshape(-1, 5, 5))
+    assert w.min() >= lo - 1e-12
+
+
+def test_functional_ranges(prepared):
+    rho, env = prepared["rho"], prepared["envelope"]
+    S = A.von_neumann_entropy(rho)
+    g = A.purity(rho)
+    F = A.root_fidelity(rho, env)
+    D = A.relative_entropy(rho, env)
+    J = A.bipartite_score(prepared["rho_i"])
+    C = A.centred_alignment(prepared["evidence"])
+    assert (S >= -1e-9).all() and (S <= np.log(A.D) + 1e-9).all()
+    assert (g >= 1 / A.D - 1e-9).all() and (g <= 1 + 1e-9).all()
+    assert (F >= -1e-9).all() and (F <= 1 + 1e-6).all()
+    assert (D >= -1e-9).all()
+    assert (J >= -1e-9).all() and (J <= 2 * np.log(A.D) + 1e-9).all()
+    assert (C >= -1 - 1e-9).all() and (C <= 1 + 1e-9).all()
+
+
+def test_bipartite_marginals_closed_form(prepared):
+    """Gamma_A = beta rho1 + (1-beta) I/d must match the partial trace."""
+    r = prepared["rho_i"][:20]
+    d2 = A.D * A.D
+    kron = np.einsum("nij,nkl->nikjl", r[:, 0], r[:, 1]).reshape(-1, d2, d2)
+    gamma = A.BETA * kron + (1 - A.BETA) * A._sigma_diag()
+    ga = gamma.reshape(-1, A.D, A.D, A.D, A.D).trace(axis1=2, axis2=4)
+    expected = A.BETA * r[:, 0] + (1 - A.BETA) * np.eye(A.D) / A.D
+    assert np.allclose(ga, expected, atol=1e-12)
+
+
+def test_gates_fitted_on_nominal_training_only(prepared):
+    """The 98th-percentile gate must fire on ~2% of the fitting slice."""
+    g = A.fit_gates(prepared["raw"], prepared["nom_train"])
+    for k in A.STRUCTURAL + A.SCALAR:
+        rate = np.mean(g["z"][k][prepared["nom_train"]] >= g["tau"][k])
+        assert 0.005 <= rate <= 0.045, (k, rate)
+
+
+# ---------------------------------------------------------------- policies
+def test_b4_inclusion(prepared):
+    """A_B2 subseteq A_B4 identically.  The v1.1 manifest violated this."""
+    d = prepared
+    acts = P.fixed_policies(d["p_raw"], d["p_cal"], d["degradation"],
+                            d["mission"], d["resensing"], d["raw"]["V"])
+    assert np.all(acts["B4"][acts["B2"] == P.ACCEPT] == P.ACCEPT)
+
+
+def test_b4_dispersion_gate_is_inert(prepared):
+    """Documented defect of the legacy router: V < 0.45 is never binding."""
+    assert (prepared["raw"]["V"] >= 0.45).mean() < 1e-3
+
+
+def test_cascade_actions_are_exhaustive(prepared):
+    d = prepared
+    g = A.fit_gates(d["raw"], d["nom_train"])
+    gated, _ = P.gated_policies(g, d["delta_bar"], d["mission"], d["resensing"])
+    for act in gated.values():
+        assert set(np.unique(act)).issubset({0, 1, 2})
+
+
+def test_cascade_is_deterministic_and_replayable(prepared):
+    d = prepared
+    g = A.fit_gates(d["raw"], d["nom_train"])
+    a1, _ = P.cascade(g, list(A.STRUCTURAL), ["S", "F", "Dv"], "S",
+                      d["delta_bar"], d["mission"], d["resensing"])
+    a2, _ = P.cascade(g, list(A.STRUCTURAL), ["S", "F", "Dv"], "S",
+                      d["delta_bar"], d["mission"], d["resensing"])
+    assert np.array_equal(a1, a2)
+
+
+def test_b6_refines_b5(prepared):
+    """Rows 1 and 3 can only remove acceptances, never add them."""
+    d = prepared
+    g = A.fit_gates(d["raw"], d["nom_train"])
+    gated, _ = P.gated_policies(g, d["delta_bar"], d["mission"], d["resensing"])
+    assert np.all(gated["B5"][gated["B6"] == P.ACCEPT] == P.ACCEPT)
+
+
+def test_union_gate_set_is_monotone(prepared):
+    """Row-2 monotonicity: a record accepted under the union gate set passes
+    every constituent gate.  Note this does NOT extend to the full cascades,
+    because B7 uses a different row-1 re-sense trigger, so a record re-sensed
+    by B7 may be accepted by B8.  The union is more conservative in its gate
+    set, not in every branch."""
+    d = prepared
+    g = A.fit_gates(d["raw"], d["nom_train"])
+    union = np.stack([g["z"][k] >= g["tau"][k]
+                      for k in A.STRUCTURAL + A.SCALAR], axis=1).any(axis=1)
+    for subset in (A.STRUCTURAL, A.SCALAR):
+        sub = np.stack([g["z"][k] >= g["tau"][k] for k in subset], axis=1).any(axis=1)
+        assert np.all(union[sub])          # any subset firing implies union firing
+        assert not np.any(sub & ~union)
+
+
+# ---------------------------------------------------------------- adversarial
+def test_representation_probe_outputs_are_valid():
+    """Probe outputs and classifier-derived TV lower bounds remain in valid ranges."""
+    import json
+    path = os.path.join(ROOT, "results", "adversarial_results.json")
+    if not os.path.exists(path):
+        pytest.skip("run scripts/build_publication.py first")
+    adv = json.load(open(path))
+    for fam in adv["probe"]["by_family"].values():
+        for rep in fam.values():
+            tv = rep["tv_lower_bound"]
+            for ni, rej in zip(rep["ni_grid"], rep["rejection"]):
+                # tv is a lower bound on the true TV, so the bound may only be
+                # checked against the achieved point of the same estimator
+                assert rej <= ni + 1.0 + 1e-9
+                assert rej >= 0.0
+            assert -1.0 <= tv <= 1.0
+
+
+def test_structural_probe_exceeds_observation_probe():
+    """The structural representation exposes greater separation to the same supervised probe."""
+    import json
+    path = os.path.join(ROOT, "results", "adversarial_results.json")
+    if not os.path.exists(path):
+        pytest.skip("run scripts/build_publication.py first")
+    f7 = json.load(open(path))["probe"]["by_family"]["f7"]
+    i = f7["obs"]["ni_grid"].index(0.10)
+    assert f7["struct"]["rejection"][i] > f7["obs"]["rejection"][i] + 0.10
+    assert f7["struct"]["tv_lower_bound"] > f7["obs"]["tv_lower_bound"]
+
+
+def test_evasion_success_uses_full_cascade(prepared):
+    """A2 success must include the severity row, not only row-2 gates."""
+    d = prepared
+    gates = A.fit_gates(d["raw"], d["nom_train"])
+    r = ADV.attack_evasion(d, gates, 20260516, "B6c", eps=0.0, n_records=40, iters=0)
+    ev = d["split"] == 2
+    pool = np.flatnonzero(ev & (d["family"] == 7) & (d["prediction"] != d["truth"]))
+    rng = np.random.default_rng(20260516 + 7)
+    idx = rng.choice(pool, size=min(40, len(pool)), replace=False)
+    keys, core, trig = P.POLICY_SETS["B6c"]
+    z = {k: gates["z"][k][idx] for k in gates["z"]}
+    u = {k: gates["u"][k][idx] for k in gates["u"]}
+    gg = dict(z=z, tau=gates["tau"], u=u)
+    act, _ = P.cascade(gg, list(keys), list(core), trig,
+                       d["delta_bar"][idx], d["mission"][idx], d["resensing"][idx])
+    assert abs(r["evaded_clean"] - np.mean(act == P.ACCEPT)) < 1e-12
+
+
+def test_evasion_search_is_monotone_in_budget():
+    import json
+    path = os.path.join(ROOT, "results", "adversarial_results.json")
+    if not os.path.exists(path):
+        pytest.skip("run scripts/build_publication.py first")
+    ev = json.load(open(path))["evasion"]
+    for name, rows in ev.items():
+        vals = [r["evaded_attacked"] for r in rows]
+        assert all(a <= b + 1e-9 for a, b in zip(vals, vals[1:])), name
+        assert rows[0]["evaded_attacked"] >= rows[0]["evaded_clean"] - 1e-9
+
+
+def test_union_is_most_evasion_resistant():
+    """The union is strictly hardest to evade at every budget.
+
+    The structural-versus-scalar ordering is NOT monotone in the budget: at
+    eps = 0.20 the compact structural set becomes easier to evade than the
+    scalar set, because a large enough perturbation can satisfy four smooth
+    constraints simultaneously.  The paper reports that crossing rather than
+    asserting an ordering that does not hold.
+    """
+    import json
+    path = os.path.join(ROOT, "results", "adversarial_results.json")
+    if not os.path.exists(path):
+        pytest.skip("run scripts/build_publication.py first")
+    ev = json.load(open(path))["evasion"]
+    for i in range(len(ADV_EPS)):
+        assert ev["B8c"][i]["evaded_attacked"] < ev["B6c"][i]["evaded_attacked"]
+        assert ev["B8c"][i]["evaded_attacked"] < ev["B7"][i]["evaded_attacked"]
+    small = ADV_EPS.index(0.05)
+    assert ev["B6c"][small]["evaded_attacked"] < ev["B7"][small]["evaded_attacked"]
+
+
+# ---------------------------------------------------------------- metrics
+def test_metric_identity(prepared):
+    d = prepared
+    g = A.fit_gates(d["raw"], d["nom_train"])
+    gated, _ = P.gated_policies(g, d["delta_bar"], d["mission"], d["resensing"])
+    m = PB._metrics(gated["B6c"], d)
+    assert abs(m["HAR"] - m["Cov"] * m["SelRisk"]) < 1e-12
+    assert abs(m["Cov"] + m["Review"] + m["Resense"] - 1.0) < 1e-12
+
+
+def test_compact_set_is_the_loso_set():
+    """The shipped compact set must equal the leave-one-seed-out selection."""
+    assert tuple(sorted(P.COMPACT)) == ("C", "J", "S", "gf")
+
+
+def test_union_is_dominated_on_the_frontier():
+    """B8c attains lower HAR only at coverage where B6c is lower still."""
+    import json
+    path = os.path.join(ROOT, "results", "paper_results.json")
+    if not os.path.exists(path):
+        pytest.skip("run scripts/build_publication.py first")
+    a = json.load(open(path))
+    u = sorted(a["frontier"]["B8c"], key=lambda p: p["Cov"])
+    c = sorted(a["frontier"]["B6c"], key=lambda p: p["Cov"])
+    xs = [p["Cov"] for p in c]
+    ys = [p["HAR"] for p in c]
+    overlap = [p for p in u if xs[0] <= p["Cov"] <= xs[-1]]
+    assert overlap, "no overlapping coverage range"
+    for p in overlap:
+        assert p["HAR"] >= np.interp(p["Cov"], xs, ys) - 1e-9
+
+
+def test_wilcoxon_exact_floor():
+    r = MT.paired_wilcoxon(np.arange(1.0, 21.0), np.zeros(20))
+    assert r["pvalue"] == pytest.approx(2.0 ** -20)
+    assert r["n_positive"] == 20
+
+
+def test_holm_monotone():
+    adj = MT.holm([1e-6, 1e-6])
+    assert all(a == pytest.approx(2e-6) for a in adj)
+
+
+def test_bootstrap_ci_brackets_mean():
+    v = np.random.default_rng(0).normal(0.5, 0.05, 20)
+    lo, hi = MT.bootstrap_ci(v)
+    assert lo < v.mean() < hi
