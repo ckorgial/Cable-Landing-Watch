@@ -1,0 +1,487 @@
+{
+  "benchmark": "Cable-Landing Watch (CLW)",
+  "version": "1.2",
+  "supersedes": "1.1",
+  "change_from_v1_1": "Families 6 and 7 (coordinated spoof, correlated residual) use the nominal degradation interval [0.00,0.10] and nominal mission-severity base 0.10. In v1.1 they used [0.05,0.15]/[0.10,0.25] and base 0.85, which separated them from nominal with zero overlap through a channel inside the router observation tuple. No other constant changed.",
+  "structure": {
+    "modalities": 3,
+    "classes": 5,
+    "families": 8,
+    "records_per_family": 1000,
+    "split": {
+      "train": 300,
+      "calibration": 150,
+      "evaluation": 550
+    }
+  },
+  "seeds": [
+    20260516,
+    7,
+    11,
+    23,
+    41,
+    97,
+    137,
+    211,
+    313,
+    503,
+    809,
+    1201,
+    1993,
+    2718,
+    3141,
+    4242,
+    5501,
+    6007,
+    7919,
+    8887
+  ],
+  "family_names": [
+    "nominal benign",
+    "UUV low SNR",
+    "ambiguous diver/clutter",
+    "novel motion",
+    "high consequence",
+    "cross-sensor contradiction",
+    "coordinated spoof",
+    "correlated residual"
+  ],
+  "priors": [
+    [
+      0.85,
+      0.1,
+      0.02,
+      0.02,
+      0.01
+    ],
+    [
+      0.1,
+      0.1,
+      0.1,
+      0.6,
+      0.1
+    ],
+    [
+      0.1,
+      0.4,
+      0.4,
+      0.05,
+      0.05
+    ],
+    [
+      0.1,
+      0.1,
+      0.1,
+      0.3,
+      0.4
+    ],
+    [
+      0.2,
+      0.1,
+      0.2,
+      0.4,
+      0.1
+    ],
+    [
+      0.05,
+      0.1,
+      0.3,
+      0.45,
+      0.1
+    ],
+    [
+      0.1,
+      0.1,
+      0.2,
+      0.5,
+      0.1
+    ],
+    [
+      0.1,
+      0.1,
+      0.2,
+      0.5,
+      0.1
+    ]
+  ],
+  "evidence_noise_sd": [
+    0.1,
+    0.45,
+    0.2,
+    0.25,
+    0.18,
+    0.1,
+    0.04,
+    0.05
+  ],
+  "degradation_interval": [
+    [
+      0.0,
+      0.1
+    ],
+    [
+      0.4,
+      0.8
+    ],
+    [
+      0.1,
+      0.3
+    ],
+    [
+      0.2,
+      0.5
+    ],
+    [
+      0.05,
+      0.2
+    ],
+    [
+      0.05,
+      0.2
+    ],
+    [
+      0.0,
+      0.1
+    ],
+    [
+      0.0,
+      0.1
+    ]
+  ],
+  "mission_severity_base": [
+    0.1,
+    0.4,
+    0.3,
+    0.7,
+    1.0,
+    0.85,
+    0.1,
+    0.1
+  ],
+  "mission_severity_sd": 0.04,
+  "resensing_interval": [
+    0.4,
+    0.95
+  ],
+  "emulator": {
+    "temperature": 0.45,
+    "calibration_grid": {
+      "lo": 0.5,
+      "hi": 6.0,
+      "step": 0.1,
+      "objective": "negative log likelihood on the full training split",
+      "tie_break": "smallest candidate"
+    }
+  },
+  "encoder": {
+    "T0": 0.25,
+    "epsilon": 0.0001,
+    "alpha_offset": 0.5,
+    "alpha_clip": [
+      0.02,
+      0.95
+    ],
+    "fusion_weights": "uniform 1/M",
+    "sd_convention": "population (1/d)"
+  },
+  "diagnostics": {
+    "beta_bipartite": 0.7,
+    "bipartite_pair": [
+      1,
+      2
+    ],
+    "eigenvalue_floor": 1e-15,
+    "scale_floor": 1e-12,
+    "structural_set": [
+      "S",
+      "F",
+      "Dv",
+      "J",
+      "gm",
+      "gf",
+      "C"
+    ],
+    "scalar_set": [
+      "Pc",
+      "De",
+      "V"
+    ],
+    "orientation": {
+      "S": "+",
+      "F": "-",
+      "Dv": "+",
+      "J": "2",
+      "gm": "-",
+      "gf": "2",
+      "C": "+",
+      "Pc": "-",
+      "De": "+",
+      "V": "-"
+    },
+    "codes": {
+      "S": "QS2",
+      "F": "QF2",
+      "Dv": "QD1",
+      "J": "QE1",
+      "gm": "QP1",
+      "gf": "QP2",
+      "C": "QC1",
+      "Pc": "QL1",
+      "De": "QG1",
+      "V": "QV1"
+    },
+    "code_priority": [
+      "gf",
+      "J",
+      "S",
+      "gm",
+      "Dv",
+      "F",
+      "C",
+      "V",
+      "Pc",
+      "De"
+    ]
+  },
+  "gates": {
+    "frozen_quantile": 0.98,
+    "quantile_rule": "numpy.quantile linear interpolation",
+    "fitted_on": "nominal training records of the same seed only"
+  },
+  "cascade": {
+    "resense_delta": 0.45,
+    "resense_feasibility": 0.6,
+    "severity": 0.75,
+    "core_margin": 0.6,
+    "instantiations": {
+      "B6": {
+        "gates": [
+          "S",
+          "F",
+          "Dv",
+          "J",
+          "gm",
+          "gf",
+          "C"
+        ],
+        "core": [
+          "S",
+          "F",
+          "Dv"
+        ],
+        "trigger": "S"
+      },
+      "B6c": {
+        "gates": [
+          "S",
+          "gf",
+          "C",
+          "J"
+        ],
+        "core": [
+          "S",
+          "gf",
+          "C"
+        ],
+        "trigger": "S"
+      },
+      "B7": {
+        "gates": [
+          "Pc",
+          "De",
+          "V"
+        ],
+        "core": [
+          "Pc",
+          "De",
+          "V"
+        ],
+        "trigger": "Pc"
+      },
+      "B8": {
+        "gates": [
+          "S",
+          "F",
+          "Dv",
+          "J",
+          "gm",
+          "gf",
+          "C",
+          "Pc",
+          "De",
+          "V"
+        ],
+        "core": [
+          "S",
+          "F",
+          "Dv",
+          "Pc",
+          "V"
+        ],
+        "trigger": "S"
+      },
+      "B8c": {
+        "gates": [
+          "S",
+          "gf",
+          "C",
+          "J",
+          "Pc",
+          "De",
+          "V"
+        ],
+        "core": [
+          "S",
+          "gf",
+          "C",
+          "Pc",
+          "V"
+        ],
+        "trigger": "S"
+      }
+    }
+  },
+  "policies": {
+    "B0": "B0 always accept",
+    "B1": "B1 raw confidence",
+    "B2": "B2 temp.-scaled confidence",
+    "B3": "B3 degradation warning",
+    "B4": "B4 hand-coded classical router",
+    "B5": "B5 structural gates only",
+    "B7": "B7 scalar-observation cascade",
+    "B6": "B6 POSEIDON-QIT",
+    "B6c": "B6c POSEIDON-QIT (compact)",
+    "B8": "B8 union cascade (full)",
+    "B8c": "B8c union cascade (compact)"
+  },
+  "matched_workload": {
+    "target_nominal_intervention": 0.1,
+    "fitted_on": "nominal calibration records of the same seed only",
+    "grid": [
+      0.8,
+      0.999,
+      0.001
+    ]
+  },
+  "inference": {
+    "unit": "seed",
+    "bootstrap_draws": 10000,
+    "bootstrap_seed": 20260516,
+    "interval": "95% percentile over seed-level resamples",
+    "prespecified_tests": [
+      "B6 vs B2 on correlated-residual HAR at matched workload (no coordinate selection)",
+      "B6 vs B7 on correlated-residual HAR at matched workload (no coordinate selection)",
+      "B6c vs B7 on correlated-residual HAR at matched workload (LOSO-selected set)"
+    ],
+    "test": "exact one-sided Wilcoxon signed-rank",
+    "correction": "Holm"
+  },
+  "ablation_semantics": "A coordinate is removed from the row-2 union, the row-1 re-sense trigger and the row-3 core set. A row-2-only removal is a different experiment and yields different values.",
+  "scope": "Synthetic decision-level mechanism benchmark over authored evidence vectors. Not a raw sonar, radar, video, electro-optical or AIS corpus. Does not establish real-sensor transfer or deployment readiness.",
+  "coordinate_selection": {
+    "method": "leave-one-seed-out on calibration risk records",
+    "threshold": 0.002,
+    "statistic": "mean single-coordinate ablation increase in calibration harmful acceptance over the other 19 seeds",
+    "result": "{S, gf, C, J}, unanimous over all 20 folds",
+    "note": "No seed influences its own coordinate set. The two primary prespecified comparisons use B6, which performs no selection at all."
+  },
+  "adversary": {
+    "threat_model": "Knows encoder constants, coordinate set, fitted per-seed thresholds and cascade rows. Cannot alter nominal training data, hence cannot move the thresholds.",
+    "A1_mechanism_redesign": {
+      "swept": [
+        "rho",
+        "innovation",
+        "sigma"
+      ],
+      "objective": "maximise harmful acceptance while remaining confidently wrong"
+    },
+    "A2_budgeted_evasion": {
+      "constraint": "||Delta||_F <= eps * ||x||_F",
+      "eps_grid": [
+        0.05,
+        0.1,
+        0.2
+      ],
+      "invariant": "upstream prediction must remain wrong",
+      "objective": "minimise the largest normalised margin max_g u_g",
+      "coordinate_sets": {
+        "B7": [
+          "Pc",
+          "De",
+          "V"
+        ],
+        "B6c": [
+          "S",
+          "gf",
+          "C",
+          "J"
+        ],
+        "B6": [
+          "S",
+          "F",
+          "Dv",
+          "J",
+          "gm",
+          "gf",
+          "C"
+        ],
+        "B8c": [
+          "S",
+          "gf",
+          "C",
+          "J",
+          "Pc",
+          "De",
+          "V"
+        ],
+        "B8": [
+          "S",
+          "F",
+          "Dv",
+          "J",
+          "gm",
+          "gf",
+          "C",
+          "Pc",
+          "De",
+          "V"
+        ]
+      }
+    },
+    "seeds": "first 3 predeclared seeds (A2 search dominates runtime)"
+  },
+  "representation_probe": {
+    "theorem": "Rej <= NI + TV(P0^R, P1^R) for any router measurable w.r.t. R; tight for the likelihood-ratio router (Proposition 2).",
+    "estimator": "HistGradientBoostingClassifier(max_iter=300) fitted on the training split with true mechanism labels, threshold swept",
+    "representations": {
+      "observation": [
+        "Pc",
+        "De",
+        "V",
+        "mission",
+        "resensing"
+      ],
+      "structural": [
+        "S",
+        "F",
+        "Dv",
+        "J",
+        "gm",
+        "gf",
+        "C",
+        "mission",
+        "resensing"
+      ]
+    },
+    "ni_grid": [
+      0.02,
+      0.05,
+      0.1,
+      0.15,
+      0.2,
+      0.3
+    ],
+    "tv_lower_bound": "2 * balanced_accuracy - 1",
+    "note": "The discriminator receives mechanism labels unavailable to a deployable router. Its curve is an empirical lower estimate of supervised performance for that representation, not a certified upper bound on all routers."
+  }
+}
