@@ -1,10 +1,17 @@
-# Cable-Landing Watch (CLW) / POSEIDON-QIT reproducibility repository
+# Cable-Landing Watch (CLW) Benchmark
 
 This repository contains the **Cable-Landing Watch (CLW) v1.2** synthetic decision-level benchmark and the code used to reproduce the numerical experiments reported with **POSEIDON-QIT: Quantum-Information-Theoretic Density-State Assurance for Multi-Sensor Authority Routing**.
 
 POSEIDON-QIT uses quantum-information-theoretic (QIT) density-state functionals only as **classical matrix and information-theoretic features**. No quantum hardware, quantum computation, or quantum speedup is assumed or claimed.
 
-Repository: https://github.com/ckorgial/Cable-Landing-Watch
+## Technical report
+
+The full benchmark specification, including the generator design, failure-family definitions, deterministic seed protocol, and evaluation contract, is documented in the accompanying technical report:
+
+**The CLW Benchmark: Generator Specification, Failure Families, Seed Protocol, and Evaluation Contract**
+
+ResearchGate Technical Report  
+**DOI:** [10.13140/RG.2.2.21905.39520](https://doi.org/10.13140/RG.2.2.21905.39520)
 
 ## What CLW is
 
